@@ -1,0 +1,98 @@
+[package]
+name = "schema-risk"
+version = "2.0.0"
+edition = "2021"
+authors = ["SchemaFlow Team"]
+description = "Production-grade PostgreSQL migration safety analyzer for CI/CD pipelines"
+license = "MIT"
+repository = "https://github.com/Ayuussshhh/newBase-backend"
+keywords = ["database", "migration", "sql", "risk", "cli"]
+categories = ["command-line-utilities", "database"]
+
+[lib]
+name = "schema_risk"
+path = "src/lib.rs"
+
+[[bin]]
+name = "schema-risk"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.5", features = ["derive", "color", "env"] }
+
+# SQL parsing
+sqlparser = "0.53"
+
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+
+# Graph analysis for dependency tracking
+petgraph = "0.6"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Terminal colors and formatting
+colored = "2"
+
+# Rich terminal tables
+comfy-table = "7"
+
+# Progress indicators (spinners, progress bars)
+indicatif = "0.17"
+
+# Structured logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Regex for pattern matching
+regex = "1.11"
+
+# Glob for multi-file analysis
+glob = "0.3"
+
+# Recursive directory walking
+walkdir = "2"
+
+# PostgreSQL driver (optional – only used for --db-url)
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"], optional = true }
+
+# sqlx-based PostgreSQL driver (alternative, feature-gated)
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "macros"], optional = true }
+
+# Parallel file scanning
+rayon = "1.10"
+
+# HTTP for GitHub API (optional – only used for CI reporting)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+
+[features]
+default = []
+# Enable live database introspection via tokio-postgres
+db = ["tokio-postgres"]
+# Enable live database introspection via sqlx (alternative - richer query API)
+sqlx-db = ["sqlx"]
+# Enable GitHub API integration
+github = ["reqwest"]
+# Enable everything
+full = ["db", "github"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
