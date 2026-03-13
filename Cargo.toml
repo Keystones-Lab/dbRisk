@@ -1,11 +1,14 @@
 [package]
 name = "schema-risk"
-version = "2.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["SchemaFlow Team"]
 description = "Production-grade PostgreSQL migration safety analyzer and dangerous-command guardian"
 license = "MIT"
-repository = "https://github.com/Ayuussshhh/newBase-backend"
+repository = "https://github.com/Ayuussshhh/schema-risk"
+homepage = "https://github.com/Ayuussshhh/schema-risk"
+documentation = "https://docs.rs/schema-risk"
+readme = "README.md"
 keywords = ["database", "migration", "sql", "risk", "cli"]
 categories = ["command-line-utilities", "database"]
 
