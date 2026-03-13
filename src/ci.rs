@@ -133,7 +133,7 @@ fn render_markdown(
         };
         let duration = r
             .estimated_lock_seconds
-            .map(|s| format_duration(s))
+            .map(format_duration)
             .unwrap_or_else(|| "—".to_string());
         let breaks = impact
             .map(|i| i.impacted_files.len())

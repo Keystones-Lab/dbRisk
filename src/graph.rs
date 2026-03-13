@@ -135,6 +135,7 @@ impl SchemaGraph {
         idx
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_foreign_key(
         &mut self,
         from_table: &str,
@@ -271,7 +272,7 @@ impl SchemaGraph {
                     if let SchemaNode::Column { name, data_type, .. } = &self.graph[col_idx] {
                         // Detect primary key by checking if the column name is "id" or
                         // if the table has an index that covers only this column.
-                        let is_pk = name == "id" || name.ends_with("_id") && name == "id";
+                        let is_pk = name == "id";
                         let pk_marker = if is_pk { " PK" } else { "" };
                         Some(format!(
                             "        {} {}{}",
@@ -299,7 +300,7 @@ impl SchemaGraph {
         }
 
         // ── Relationships ─────────────────────────────────────────────────
-        for (_, &table_idx) in &self.table_index {
+        for &table_idx in self.table_index.values() {
             for edge in self.graph.edges(table_idx) {
                 if let SchemaEdge::ForeignKey {
                     constraint_name,
@@ -396,7 +397,7 @@ impl SchemaGraph {
         out.push('\n');
 
         // ── FK edges ─────────────────────────────────────────────────────
-        for (_, &table_idx) in &self.table_index {
+        for &table_idx in self.table_index.values() {
             for edge in self.graph.edges(table_idx) {
                 if let SchemaEdge::ForeignKey {
                     constraint_name,

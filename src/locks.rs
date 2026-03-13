@@ -198,7 +198,7 @@ impl LockSimulator {
                 let hold = if is_instant {
                     1
                 } else {
-                    self.row_based_hold(&[table.clone()], 1, 8)
+                    self.row_based_hold(std::slice::from_ref(table), 1, 8)
                 };
                 Some(LockEvent {
                     statement: format!("ALTER TABLE {} ADD COLUMN {}", table, column.name),
@@ -222,7 +222,7 @@ impl LockSimulator {
 
             // ── ALTER TABLE DROP COLUMN ───────────────────────────────────
             ParsedStatement::AlterTableDropColumn { table, column, .. } => {
-                let hold = self.row_based_hold(&[table.clone()], 1, 10);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 1, 10);
                 Some(LockEvent {
                     statement: format!("ALTER TABLE {} DROP COLUMN {}", table, column),
                     tables: vec![table.clone()],
@@ -242,7 +242,7 @@ impl LockSimulator {
             // ── ALTER COLUMN TYPE ─────────────────────────────────────────
             // Full table rewrite → long ACCESS EXCLUSIVE.
             ParsedStatement::AlterTableAlterColumnType { table, column, new_type } => {
-                let hold = self.row_based_hold(&[table.clone()], 2, 15);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 2, 15);
                 Some(LockEvent {
                     statement: format!(
                         "ALTER TABLE {} ALTER COLUMN {} TYPE {}",
@@ -268,7 +268,7 @@ impl LockSimulator {
             // ── SET NOT NULL ──────────────────────────────────────────────
             // PostgreSQL must scan every row → can be slow.
             ParsedStatement::AlterTableSetNotNull { table, column } => {
-                let hold = self.row_based_hold(&[table.clone()], 1, 10);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 1, 10);
                 Some(LockEvent {
                     statement: format!(
                         "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL",
@@ -298,7 +298,7 @@ impl LockSimulator {
                 unique,
                 concurrently,
             } if !concurrently => {
-                let hold = self.row_based_hold(&[table.clone()], 1, 20);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 1, 20);
                 let name = index_name.as_deref().unwrap_or("unnamed");
                 Some(LockEvent {
                     statement: format!(
@@ -333,7 +333,7 @@ impl LockSimulator {
                 concurrently: true,
             } => {
                 // CONCURRENTLY takes SHARE UPDATE EXCLUSIVE (allows reads+writes)
-                let hold = self.row_based_hold(&[table.clone()], 2, 30);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 2, 30);
                 let name = index_name.as_deref().unwrap_or("unnamed");
                 Some(LockEvent {
                     statement: format!(
@@ -468,7 +468,7 @@ impl LockSimulator {
             }
 
             ParsedStatement::AlterTableAddPrimaryKey { table, columns } => {
-                let hold = self.row_based_hold(&[table.clone()], 2, 25);
+                let hold = self.row_based_hold(std::slice::from_ref(table), 2, 25);
                 Some(LockEvent {
                     statement: format!(
                         "ALTER TABLE {} ADD PRIMARY KEY ({})",

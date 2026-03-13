@@ -156,7 +156,7 @@ pub fn render_impact_panel(report: &MigrationReport, op_desc: &str, risk: RiskLe
 
     if let Some(secs) = report.estimated_lock_seconds {
         let lock_range = if secs < 5 {
-            format!("< 5s")
+            "< 5s".to_string()
         } else if secs < 60 {
             format!("~{}s", secs)
         } else {
@@ -201,23 +201,23 @@ pub fn render_impact_panel(report: &MigrationReport, op_desc: &str, risk: RiskLe
     eprintln!("║  {:<width$}  ║", "WHAT WILL BREAK:", width = inner - 2);
     let desc_upper = op_desc.to_uppercase();
     if desc_upper.contains("DROP TABLE") {
-        line(&"• All queries to the dropped table will fail immediately");
-        line(&"• Foreign keys with CASCADE will also delete child rows");
-        line(&"• Application code referencing this table will crash");
+        line("• All queries to the dropped table will fail immediately");
+        line("• Foreign keys with CASCADE will also delete child rows");
+        line("• Application code referencing this table will crash");
     } else if desc_upper.contains("DROP COLUMN") || desc_upper.contains("DROP COL") {
-        line(&"• All queries selecting this column will error");
-        line(&"• ORM models referencing this column will break");
+        line("• All queries selecting this column will error");
+        line("• ORM models referencing this column will break");
     } else if desc_upper.contains("RENAME") {
-        line(&"• All queries using the old name will fail immediately");
-        line(&"• Views, stored procedures, and FK constraints may break");
+        line("• All queries using the old name will fail immediately");
+        line("• Views, stored procedures, and FK constraints may break");
     } else if desc_upper.contains("TRUNCATE") {
-        line(&"• All data is permanently deleted — this cannot be undone");
-        line(&"• Application may behave unexpectedly with empty table");
+        line("• All data is permanently deleted — this cannot be undone");
+        line("• Application may behave unexpectedly with empty table");
     } else if desc_upper.contains("ALTER COLUMN") && desc_upper.contains("TYPE") {
-        line(&"• Table rewrite required — writes blocked during migration");
-        line(&"• Data truncation or conversion errors possible");
+        line("• Table rewrite required — writes blocked during migration");
+        line("• Data truncation or conversion errors possible");
     } else {
-        line(&"• Review the impact carefully before proceeding");
+        line("• Review the impact carefully before proceeding");
     }
 
     eprintln!("║{:width$}║", "", width = box_width);
@@ -226,14 +226,14 @@ pub fn render_impact_panel(report: &MigrationReport, op_desc: &str, risk: RiskLe
     if desc_upper.contains("DROP TABLE") {
         divider();
         eprintln!("║  {:<width$}  ║", "SAFE ALTERNATIVE:", width = inner - 2);
-        line(&"Rename first: ALTER TABLE x RENAME TO x_deprecated;");
-        line(&"Then verify nothing breaks. Drop after 1 release cycle.");
+        line("Rename first: ALTER TABLE x RENAME TO x_deprecated;");
+        line("Then verify nothing breaks. Drop after 1 release cycle.");
     } else if desc_upper.contains("DROP COLUMN") {
         divider();
         eprintln!("║  {:<width$}  ║", "SAFE ALTERNATIVE:", width = inner - 2);
-        line(&"1. Remove app code that reads/writes this column");
-        line(&"2. Deploy the app change");
-        line(&"3. Then run: ALTER TABLE x DROP COLUMN IF EXISTS y;");
+        line("1. Remove app code that reads/writes this column");
+        line("2. Deploy the app change");
+        line("3. Then run: ALTER TABLE x DROP COLUMN IF EXISTS y;");
     }
 
     divider();
@@ -347,6 +347,7 @@ fn write_audit_log(
 // ─────────────────────────────────────────────
 
 /// Options for `run_guard`.
+#[derive(Default)]
 pub struct GuardOptions {
     /// Print impact panel but do not prompt. Exit code reflects risk.
     pub dry_run: bool,
@@ -356,17 +357,6 @@ pub struct GuardOptions {
     pub row_counts: HashMap<String, u64>,
     /// Configuration (thresholds, audit log path, etc.).
     pub config: Config,
-}
-
-impl Default for GuardOptions {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            non_interactive: false,
-            row_counts: HashMap::new(),
-            config: Config::default(),
-        }
-    }
 }
 
 /// Intercepts a SQL migration and gates execution behind explicit confirmation.

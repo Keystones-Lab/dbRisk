@@ -63,7 +63,7 @@ impl Default for Thresholds {
 // Rules config
 // ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RulesConfig {
     /// Rule IDs to disable (e.g. ["R03", "R07"])
@@ -72,31 +72,13 @@ pub struct RulesConfig {
     pub table_overrides: HashMap<String, TableOverride>,
 }
 
-impl Default for RulesConfig {
-    fn default() -> Self {
-        Self {
-            disabled: Vec::new(),
-            table_overrides: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TableOverride {
     /// Allow higher risk level on this table.
     pub max_risk: Option<String>,
     /// Skip risk analysis entirely for this table.
     pub ignored: bool,
-}
-
-impl Default for TableOverride {
-    fn default() -> Self {
-        Self {
-            max_risk: None,
-            ignored: false,
-        }
-    }
 }
 
 // ─────────────────────────────────────────────
