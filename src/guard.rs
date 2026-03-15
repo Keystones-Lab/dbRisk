@@ -113,6 +113,15 @@ pub fn is_guarded_operation(desc: &str, score: u32) -> bool {
         || upper.contains("RENAME TO")
 }
 
+fn is_irreversible_operation(desc: &str) -> bool {
+    let upper = desc.to_uppercase();
+    upper.contains("DROP TABLE")
+        || upper.contains("DROP DATABASE")
+        || upper.contains("DROP SCHEMA")
+        || upper.contains("DROP COLUMN")
+        || upper.contains("TRUNCATE")
+}
+
 // ─────────────────────────────────────────────
 // Impact panel rendering
 // ─────────────────────────────────────────────
@@ -126,33 +135,15 @@ pub fn render_impact_panel(
     actor: &ActorKind,
 ) {
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let box_width = 72;
-    let inner = box_width - 2;
+    let divider = "-".repeat(78).dimmed().to_string();
+    let bullet = "•".dimmed();
 
-    let line = |s: &str| {
-        let padded = format!("  {:<width$}", s, width = inner - 2);
-        eprintln!("║{}║", padded);
-    };
-    let divider = || eprintln!("╠{}╣", "═".repeat(box_width));
-
-    // Header
-    eprintln!("\n╔{}╗", "═".repeat(box_width));
-    eprintln!(
-        "║  {:<width$}  ║",
-        "⚠  DANGEROUS OPERATION DETECTED — CONFIRMATION REQUIRED",
-        width = inner - 2
-    );
-    divider();
-
-    // Operation details
     let risk_str = match risk {
         RiskLevel::Critical => "CRITICAL".red().bold().to_string(),
         RiskLevel::High => "HIGH".truecolor(255, 140, 0).bold().to_string(),
-        RiskLevel::Medium => "MEDIUM".yellow().to_string(),
-        RiskLevel::Low => "LOW".green().to_string(),
+        RiskLevel::Medium => "MEDIUM".yellow().bold().to_string(),
+        RiskLevel::Low => "LOW".green().bold().to_string(),
     };
-    line(&format!("Operation  : {}", op_desc));
-    line(&format!("Risk Level : {}  (score: {})", risk_str, score));
 
     let lock_type = if score >= 90 || op_desc.to_uppercase().contains("DROP TABLE") {
         "ACCESS EXCLUSIVE"
@@ -161,7 +152,21 @@ pub fn render_impact_panel(
     } else {
         "SHARE ROW EXCLUSIVE"
     };
-    line(&format!("Lock Type  : {}", lock_type));
+    let desc_upper = op_desc.to_uppercase();
+
+    eprintln!();
+    eprintln!("{}", divider);
+    eprintln!("{}", "Dangerous migration operation detected".bold());
+    eprintln!("{}", divider);
+
+    eprintln!("  {} {}", "Operation:".bold(), op_desc);
+    eprintln!(
+        "  {} {} {}",
+        "Risk:".bold(),
+        risk_str,
+        format!("(score: {score})").dimmed()
+    );
+    eprintln!("  {} {}", "Lock:".bold(), lock_type);
 
     if let Some(secs) = report.estimated_lock_seconds {
         let lock_range = if secs < 5 {
@@ -169,87 +174,82 @@ pub fn render_impact_panel(
         } else if secs < 60 {
             format!("~{}s", secs)
         } else {
-            format!("~{}m – {}m", secs / 60, (secs / 60) + 2)
+            format!("~{}m", secs / 60)
         };
-        line(&format!("Est. Lock  : {}", lock_range));
+        eprintln!("  {} {}", "Estimated lock:".bold(), lock_range);
     }
 
-    divider();
-    eprintln!("║  {:<width$}  ║", "DATABASE IMPACT", width = inner - 2);
+    if is_irreversible_operation(op_desc) {
+        eprintln!(
+            "\n  {} {}",
+            "Warning:".red().bold(),
+            "This operation is irreversible.".red()
+        );
+    }
 
-    // Table impact
     if !report.affected_tables.is_empty() {
-        eprintln!("║  ┌{:─<width$}┐  ║", "", width = inner - 4);
-        eprintln!("║  │ {:<44} {:<10} │  ║", "Table", "Impact");
-        eprintln!("║  │ {:─<44} {:─<10} │  ║", "", "");
+        eprintln!("\n{}", "Database impact".bold());
         for table in &report.affected_tables {
-            let impact_str = if op_desc.to_uppercase().contains("DROP TABLE") {
-                "DELETED permanently"
-            } else if op_desc.to_uppercase().contains("TRUNCATE") {
-                "TRUNCATED permanently"
+            let impact_str = if desc_upper.contains("DROP TABLE") {
+                "DELETED"
+            } else if desc_upper.contains("TRUNCATE") {
+                "TRUNCATED"
             } else {
                 "MODIFIED"
             };
-            eprintln!("║  │ {:<44} {:<10} │  ║", shorten(table, 44), impact_str);
+            eprintln!("  {} {:<40} {}", bullet, shorten(table, 40), impact_str);
         }
-        // FK cascade impacts
         for fk in &report.fk_impacts {
             if fk.cascade {
                 eprintln!(
-                    "║  │ {:<44} {:<10} │  ║",
-                    shorten(&fk.from_table, 44),
-                    "CASCADE DELETED"
+                    "  {} {:<40} {}",
+                    bullet,
+                    shorten(&fk.from_table, 40),
+                    "CASCADE DELETE"
                 );
             }
         }
-        eprintln!("║  └{:─<width$}┘  ║", "", width = inner - 4);
     }
 
-    eprintln!("║{:width$}║", "", width = box_width);
-
-    // What will break
-    divider();
-    eprintln!("║  {:<width$}  ║", "WHAT WILL BREAK:", width = inner - 2);
-    let desc_upper = op_desc.to_uppercase();
+    eprintln!("\n{}", "Potential breakage".bold());
     if desc_upper.contains("DROP TABLE") {
-        line("• All queries to the dropped table will fail immediately");
-        line("• Foreign keys with CASCADE will also delete child rows");
-        line("• Application code referencing this table will crash");
+        eprintln!("  {} All queries to the dropped table will fail", bullet);
+        eprintln!(
+            "  {} Foreign keys with CASCADE may delete dependent rows",
+            bullet
+        );
+        eprintln!("  {} Application code referencing this table will break", bullet);
     } else if desc_upper.contains("DROP COLUMN") || desc_upper.contains("DROP COL") {
-        line("• All queries selecting this column will error");
-        line("• ORM models referencing this column will break");
+        eprintln!("  {} Queries selecting this column will error", bullet);
+        eprintln!("  {} ORM models referencing this column will break", bullet);
     } else if desc_upper.contains("RENAME") {
-        line("• All queries using the old name will fail immediately");
-        line("• Views, stored procedures, and FK constraints may break");
+        eprintln!("  {} Queries using the old name will fail immediately", bullet);
+        eprintln!("  {} Views, procedures, and constraints may need updates", bullet);
     } else if desc_upper.contains("TRUNCATE") {
-        line("• All data is permanently deleted — this cannot be undone");
-        line("• Application may behave unexpectedly with empty table");
+        eprintln!("  {} Existing table data is permanently deleted", bullet);
+        eprintln!("  {} Application behavior may change with empty tables", bullet);
     } else if desc_upper.contains("ALTER COLUMN") && desc_upper.contains("TYPE") {
-        line("• Table rewrite required — writes blocked during migration");
-        line("• Data truncation or conversion errors possible");
+        eprintln!("  {} Table rewrite may block writes during migration", bullet);
+        eprintln!("  {} Data conversion or truncation errors are possible", bullet);
     } else {
-        line("• Review the impact carefully before proceeding");
+        eprintln!("  {} Review migration impact carefully before continuing", bullet);
     }
 
-    eprintln!("║{:width$}║", "", width = box_width);
-
-    // Safe alternative
     if desc_upper.contains("DROP TABLE") {
-        divider();
-        eprintln!("║  {:<width$}  ║", "SAFE ALTERNATIVE:", width = inner - 2);
-        line("Rename first: ALTER TABLE x RENAME TO x_deprecated;");
-        line("Then verify nothing breaks. Drop after 1 release cycle.");
+        eprintln!("\n{}", "Safer rollout".bold());
+        eprintln!(
+            "  {} Rename first (e.g., to *_deprecated), validate traffic, then drop later",
+            bullet
+        );
     } else if desc_upper.contains("DROP COLUMN") {
-        divider();
-        eprintln!("║  {:<width$}  ║", "SAFE ALTERNATIVE:", width = inner - 2);
-        line("1. Remove app code that reads/writes this column");
-        line("2. Deploy the app change");
-        line("3. Then run: ALTER TABLE x DROP COLUMN IF EXISTS y;");
+        eprintln!("\n{}", "Safer rollout".bold());
+        eprintln!("  {} Remove app references first", bullet);
+        eprintln!("  {} Deploy application changes", bullet);
+        eprintln!("  {} Drop the column in a follow-up migration", bullet);
     }
 
-    divider();
-    line(&format!("Actor: {}   Time: {}", actor, now));
-    eprintln!("╚{}╝", "═".repeat(box_width));
+    eprintln!("\n  {} {}   {} {}", "Actor:".bold(), actor, "Time:".bold(), now);
+    eprintln!("{}", divider);
     eprintln!();
 }
 
@@ -481,11 +481,11 @@ pub fn run_guard(path: &Path, opts: GuardOptions) -> crate::error::Result<GuardO
     for op in &guarded_ops {
         render_impact_panel(&report, &op.description, op.risk_level, op.score, &actor);
 
-        let irreversible = op.risk_level >= RiskLevel::High;
+        let irreversible = is_irreversible_operation(&op.description);
         if irreversible {
             eprintln!(
                 "  {}",
-                "This action is IRREVERSIBLE. All data will be permanently destroyed."
+                "This operation is irreversible. Proceed only with a rollback strategy."
                     .red()
                     .bold()
             );

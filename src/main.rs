@@ -437,41 +437,7 @@ async fn main() {
 
             let report = engine.analyze(&migration.name, &stmts);
             output::render(&report, /* verbose = */ true);
-
-            // Print detailed statement-by-statement breakdown
-            use colored::Colorize;
-            println!(
-                "\n  {}\n",
-                "Statement-by-Statement Breakdown".bold().underline()
-            );
-            for (i, (stmt, op)) in stmts
-                .iter()
-                .zip(report.operations.iter().chain(std::iter::repeat(
-                    &schema_risk::types::DetectedOperation {
-                        description: String::new(),
-                        tables: vec![],
-                        risk_level: RiskLevel::Low,
-                        score: 0,
-                        warning: None,
-                        acquires_lock: false,
-                        index_rebuild: false,
-                    },
-                )))
-                .enumerate()
-            {
-                println!(
-                    "  [{:02}] {}",
-                    i + 1,
-                    format!("{:?}", stmt).chars().take(120).collect::<String>()
-                );
-                if !op.description.is_empty() {
-                    println!("       → {}", op.description.cyan());
-                    if let Some(w) = &op.warning {
-                        println!("       ⚠  {}", w.yellow());
-                    }
-                }
-                println!();
-            }
+            output::render_statement_breakdown(&stmts, &report.operations);
         }
 
         // ── schema-risk graph ─────────────────────────────────────────────
@@ -500,15 +466,9 @@ async fn main() {
                 }
             }
 
-            use colored::Colorize;
             match format {
                 GraphFormat::Text => {
-                    println!("\n  {}\n", "Schema Dependency Graph".bold().underline());
-                    println!("{}", combined_graph.text_summary());
-                    println!(
-                        "\n  Total tables: {}\n",
-                        combined_graph.all_tables().len().to_string().cyan()
-                    );
+                    output::render_graph_text(&combined_graph);
                 }
                 GraphFormat::Mermaid => {
                     println!("{}", combined_graph.export_mermaid());

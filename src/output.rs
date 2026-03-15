@@ -1,11 +1,14 @@
 //! Terminal output renderer – pretty-prints analysis results to stdout.
 
 use crate::drift::DriftReport;
+use crate::graph::{SchemaEdge, SchemaGraph, SchemaNode};
 use crate::impact::ImpactReport;
 use crate::locks::{LockMode, MigrationTimeline};
+use crate::parser::ParsedStatement;
 use crate::recommendation::{FixSeverity, FixSuggestion};
-use crate::types::{MigrationReport, RiskLevel};
+use crate::types::{DetectedOperation, MigrationReport, RiskLevel};
 use colored::Colorize;
+use petgraph::visit::EdgeRef;
 
 // ─────────────────────────────────────────────
 // Colours
@@ -147,6 +150,195 @@ pub fn render(report: &MigrationReport, verbose: bool) {
         "  ✓  Migration looks safe".green()
     };
     println!("{}\n", stamp);
+}
+
+pub fn render_statement_breakdown(stmts: &[ParsedStatement], operations: &[DetectedOperation]) {
+    let separator = "─".repeat(60);
+
+    println!("\n{}", separator.dimmed());
+    println!("{}", " Statement-by-Statement Breakdown".bold());
+    println!("{}", separator.dimmed());
+
+    for (index, stmt) in stmts.iter().enumerate() {
+        let preview = statement_preview(stmt);
+        println!("\n  [{:02}] {}", index + 1, preview);
+
+        if let Some(op) = operations.get(index) {
+            if !op.description.is_empty() {
+                println!("       {} {}", "→".green(), op.description.cyan());
+            }
+            if let Some(warning) = &op.warning {
+                println!("       {} {}", "⚠".yellow(), warning.yellow());
+            }
+        }
+    }
+
+    println!("\n{}", separator.dimmed());
+}
+
+pub fn render_graph_text(graph: &SchemaGraph) {
+    let separator = "─".repeat(60);
+
+    println!("\n{}", separator.dimmed());
+    println!("{}", " Schema Dependency Graph".bold());
+    println!("{}", separator.dimmed());
+
+    let mut tables: Vec<String> = graph.table_index.keys().cloned().collect();
+    tables.sort();
+
+    if tables.is_empty() {
+        println!("\n  {} No tables found in migration input.", "ℹ".cyan());
+        println!("\n{}", separator.dimmed());
+        return;
+    }
+
+    println!("\n  {}", "Tables".bold().underline());
+    for table in &tables {
+        println!("    {} {}", "•".dimmed(), table.cyan());
+    }
+
+    let mut fk_lines: Vec<String> = Vec::new();
+    for edge in graph.graph.edge_references() {
+        if let SchemaEdge::ForeignKey {
+            constraint_name,
+            from_columns,
+            to_columns,
+            cascade_delete,
+            ..
+        } = edge.weight()
+        {
+            let Some(SchemaNode::Table { name: from_table, .. }) = graph.graph.node_weight(edge.source()) else {
+                continue;
+            };
+            let Some(SchemaNode::Table { name: to_table, .. }) = graph.graph.node_weight(edge.target()) else {
+                continue;
+            };
+
+            let from_col = from_columns.first().map(String::as_str).unwrap_or("*");
+            let to_col = to_columns.first().map(String::as_str).unwrap_or("*");
+            let fk_name = constraint_name.as_deref().unwrap_or("unnamed_fk");
+            let cascade_note = if *cascade_delete {
+                " [ON DELETE CASCADE]"
+            } else {
+                ""
+            };
+
+            fk_lines.push(format!(
+                "{}.{from_col} → {}.{to_col} ({fk_name}){cascade_note}",
+                from_table, to_table
+            ));
+        }
+    }
+    fk_lines.sort();
+
+    println!("\n  {}", "Foreign keys".bold().underline());
+    if fk_lines.is_empty() {
+        println!("    {} none", "•".dimmed());
+    } else {
+        for relation in fk_lines {
+            println!("    {} {}", "•".dimmed(), relation);
+        }
+    }
+
+    println!(
+        "\n  {} {}",
+        "Total tables:".bold(),
+        tables.len().to_string().cyan()
+    );
+    println!("{}\n", separator.dimmed());
+}
+
+fn statement_preview(stmt: &ParsedStatement) -> String {
+    match stmt {
+        ParsedStatement::CreateTable { table, .. } => format!("CREATE TABLE {}", table),
+        ParsedStatement::DropTable { tables, .. } => format!("DROP TABLE {}", tables.join(", ")),
+        ParsedStatement::AlterTableAddColumn { table, column } => {
+            format!("ALTER TABLE {} ADD COLUMN {} {}", table, column.name, column.data_type)
+        }
+        ParsedStatement::AlterTableDropColumn { table, column, .. } => {
+            format!("ALTER TABLE {} DROP COLUMN {}", table, column)
+        }
+        ParsedStatement::AlterTableAlterColumnType {
+            table,
+            column,
+            new_type,
+        } => format!("ALTER TABLE {} ALTER COLUMN {} TYPE {}", table, column, new_type),
+        ParsedStatement::AlterTableSetNotNull { table, column } => {
+            format!("ALTER TABLE {} ALTER COLUMN {} SET NOT NULL", table, column)
+        }
+        ParsedStatement::AlterTableAddForeignKey { table, fk } => {
+            let from_cols = if fk.columns.is_empty() {
+                "*".to_string()
+            } else {
+                fk.columns.join(", ")
+            };
+            let to_cols = if fk.ref_columns.is_empty() {
+                "*".to_string()
+            } else {
+                fk.ref_columns.join(", ")
+            };
+            format!(
+                "ALTER TABLE {} ADD FOREIGN KEY ({}) REFERENCES {} ({})",
+                table, from_cols, fk.ref_table, to_cols
+            )
+        }
+        ParsedStatement::AlterTableDropConstraint {
+            table,
+            constraint,
+            ..
+        } => format!("ALTER TABLE {} DROP CONSTRAINT {}", table, constraint),
+        ParsedStatement::AlterTableRenameColumn { table, old, new } => {
+            format!("ALTER TABLE {} RENAME COLUMN {} TO {}", table, old, new)
+        }
+        ParsedStatement::AlterTableRenameTable { old, new } => {
+            format!("ALTER TABLE {} RENAME TO {}", old, new)
+        }
+        ParsedStatement::CreateIndex {
+            index_name,
+            table,
+            columns,
+            unique,
+            concurrently,
+        } => {
+            let name = index_name.as_deref().unwrap_or("<unnamed>");
+            let unique_str = if *unique { "UNIQUE " } else { "" };
+            let concurrently_str = if *concurrently { " CONCURRENTLY" } else { "" };
+            format!(
+                "CREATE {}INDEX{} {} ON {} ({})",
+                unique_str,
+                concurrently_str,
+                name,
+                table,
+                columns.join(", ")
+            )
+        }
+        ParsedStatement::DropIndex { names, .. } => format!("DROP INDEX {}", names.join(", ")),
+        ParsedStatement::AlterTableAddPrimaryKey { table, columns } => {
+            format!("ALTER TABLE {} ADD PRIMARY KEY ({})", table, columns.join(", "))
+        }
+        ParsedStatement::AlterTableDropPrimaryKey { table } => {
+            format!("ALTER TABLE {} DROP PRIMARY KEY", table)
+        }
+        ParsedStatement::AlterTableAlterColumnDefault {
+            table,
+            column,
+            drop_default,
+        } => {
+            if *drop_default {
+                format!("ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT", table, column)
+            } else {
+                format!("ALTER TABLE {} ALTER COLUMN {} SET DEFAULT ...", table, column)
+            }
+        }
+        ParsedStatement::Other { raw } => {
+            let trimmed = raw.trim();
+            if trimmed.len() > 100 {
+                format!("{}…", &trimmed[..99])
+            } else {
+                trimmed.to_string()
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────
