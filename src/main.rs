@@ -291,6 +291,29 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Run a built-in demo showing SchemaRisk catching dangerous migrations.
+    ///
+    /// This is the fastest way to see SchemaRisk in action — no setup required.
+    Demo,
+
+    /// Auto-discover and analyze all migrations in the current project.
+    ///
+    /// Zero-config: discovers migration directories, analyzes all SQL files,
+    /// and reports any dangerous operations found.
+    Doctor {
+        /// Show detailed output for each file
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Target PostgreSQL major version for scoring
+        #[arg(long, default_value = "14")]
+        pg_version: u32,
+
+        /// Fail with exit code 1 if risk meets this threshold
+        #[arg(long, default_value = "high")]
+        fail_on: FailLevel,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -1108,6 +1131,20 @@ async fn main() {
                 process::exit(0);
             }
         }
+
+        // ── schema-risk demo ─────────────────────────────────────────────────
+        Commands::Demo => {
+            run_demo();
+        }
+
+        // ── schema-risk doctor ───────────────────────────────────────────────
+        Commands::Doctor {
+            verbose,
+            pg_version,
+            fail_on,
+        } => {
+            run_doctor(verbose, pg_version, fail_on.into()).await;
+        }
     }
 }
 
@@ -1257,4 +1294,399 @@ fn print_sql_diff(original: &str, fixed: &str) {
     if changed == 0 {
         println!("  (no changes)");
     }
+}
+
+// ─────────────────────────────────────────────
+// Demo command — instant value demonstration
+// ─────────────────────────────────────────────
+
+/// Built-in demo SQL that showcases dangerous migration patterns.
+const DEMO_SQL: &str = r#"
+-- This migration looks innocent but will cause production downtime.
+
+-- Problem 1: Type change requires full table rewrite
+ALTER TABLE users ALTER COLUMN email TYPE VARCHAR(255);
+
+-- Problem 2: Index without CONCURRENTLY blocks all writes
+CREATE INDEX idx_users_email ON users(email);
+
+-- Problem 3: NOT NULL without default fails on existing rows
+ALTER TABLE orders ADD COLUMN shipped BOOLEAN NOT NULL;
+
+-- Problem 4: Dropping a column breaks app code that still reads it
+ALTER TABLE products DROP COLUMN legacy_sku;
+"#;
+
+fn run_demo() {
+    use colored::Colorize;
+
+    println!();
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!(
+        " {} {} — Real-World Migration Analysis",
+        "SchemaRisk".bold().cyan(),
+        "Demo".bold()
+    );
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!();
+    println!("  Analyzing a dangerous migration file...");
+    println!();
+
+    // Parse and analyze the demo SQL
+    let stmts = match parser::parse(DEMO_SQL) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Demo parse error: {}", e);
+            process::exit(2);
+        }
+    };
+
+    // Create engine with realistic table sizes
+    let mut row_counts = HashMap::new();
+    row_counts.insert("users".to_string(), 5_000_000);
+    row_counts.insert("orders".to_string(), 12_000_000);
+    row_counts.insert("products".to_string(), 500_000);
+
+    let engine = RiskEngine::new(row_counts.clone()).with_pg_version(14);
+    let report = engine.analyze("demo_migration.sql", &stmts);
+
+    // Print header with risk level
+    let risk_color = match report.overall_risk {
+        RiskLevel::Critical => "CRITICAL".red().bold(),
+        RiskLevel::High => "HIGH".red().bold(),
+        RiskLevel::Medium => "MEDIUM".yellow().bold(),
+        RiskLevel::Low => "LOW".green().bold(),
+    };
+
+    println!("  ┌────────────────────────────────────────────────────────────────────────────┐");
+    println!(
+        "  │ {} {} RISK DETECTED                                                  │",
+        "⛔".red(),
+        risk_color
+    );
+    println!("  ├────────────────────────────────────────────────────────────────────────────┤");
+
+    // Show each dangerous operation
+    for op in &report.operations {
+        if op.score >= 20 {
+            let risk_badge = match op.risk_level {
+                RiskLevel::Critical => "[CRITICAL]".red().bold(),
+                RiskLevel::High => "[HIGH]".red(),
+                RiskLevel::Medium => "[MEDIUM]".yellow(),
+                RiskLevel::Low => "[LOW]".green(),
+            };
+
+            println!(
+                "  │                                                                            │"
+            );
+            println!(
+                "  │  {} {}",
+                risk_badge,
+                truncate_string(&op.description, 55)
+            );
+
+            if let Some(warning) = &op.warning {
+                // Wrap warning text
+                for line in wrap_text(warning, 68) {
+                    println!("  │     {}", line.dimmed());
+                }
+            }
+        }
+    }
+
+    println!("  │                                                                            │");
+    println!("  ├────────────────────────────────────────────────────────────────────────────┤");
+    println!(
+        "  │  {} Score: {}  |  Lock Duration: ~{} seconds  |  Tables: {}       │",
+        "📊".cyan(),
+        report.score.to_string().yellow().bold(),
+        report.estimated_lock_seconds.unwrap_or(0),
+        report.affected_tables.len()
+    );
+    println!("  └────────────────────────────────────────────────────────────────────────────┘");
+
+    // Show fix suggestions
+    let fixes = recommendation::suggest_fixes(&stmts, &row_counts);
+    if !fixes.is_empty() {
+        println!();
+        println!(
+            "  {} {}",
+            "✓".green().bold(),
+            "Safe Alternatives:".bold().underline()
+        );
+        println!();
+
+        for fix in fixes.iter().take(2) {
+            println!("  {}", format!("  Rule {}", fix.rule_id).cyan());
+            println!("    {}", fix.explanation.dimmed());
+            if let Some(sql) = &fix.fixed_sql {
+                println!();
+                for line in sql.lines().take(3) {
+                    println!("    {}", line.green());
+                }
+                if sql.lines().count() > 3 {
+                    println!("    {}", "...".dimmed());
+                }
+            }
+            println!();
+        }
+    }
+
+    // Final message
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!();
+    println!(
+        "  {} This migration would have caused {} of downtime.",
+        "→".cyan(),
+        "8-15 minutes".red().bold()
+    );
+    println!(
+        "  {} SchemaRisk detected {} dangerous operations.",
+        "→".cyan(),
+        report.operations.iter().filter(|o| o.score >= 40).count()
+    );
+    println!(
+        "  {} Run {} to analyze your own migrations.",
+        "→".cyan(),
+        "schema-risk analyze <file>".cyan().bold()
+    );
+    println!();
+}
+
+// ─────────────────────────────────────────────
+// Doctor command — zero-config full analysis
+// ─────────────────────────────────────────────
+
+async fn run_doctor(verbose: bool, pg_version: u32, fail_level: RiskLevel) {
+    use colored::Colorize;
+
+    println!();
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!(
+        " {} {} — Zero-Config Migration Analysis",
+        "SchemaRisk".bold().cyan(),
+        "Doctor".bold()
+    );
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!();
+
+    // Step 1: Discover migrations
+    println!("  {} Discovering migration directories...", "●".cyan());
+
+    let cfg = config::load(None);
+    let discovery = MigrationDiscovery::new(cfg.migrations);
+    let discover_report = discovery.discover(Path::new("."));
+
+    if discover_report.discovered.is_empty() {
+        println!();
+        println!("  {} No migration directories found.", "!".yellow().bold());
+        println!();
+        println!("  Searched for:");
+        for pattern in discover_report.patterns_searched.iter().take(5) {
+            println!("    • {}", pattern.dimmed());
+        }
+        println!();
+        println!(
+            "  Tip: Create a {} directory or run {} to get started.",
+            "migrations/".cyan(),
+            "schema-risk init".cyan()
+        );
+        println!();
+        process::exit(0);
+    }
+
+    println!(
+        "    Found {} director{} with {} SQL file{}",
+        discover_report.discovered.len().to_string().green().bold(),
+        if discover_report.discovered.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        discover_report.total_sql_files.to_string().cyan(),
+        if discover_report.total_sql_files == 1 {
+            ""
+        } else {
+            "s"
+        }
+    );
+
+    if verbose {
+        for disc in &discover_report.discovered {
+            println!(
+                "      {} [{}]",
+                disc.path.display().to_string().dimmed(),
+                disc.framework
+            );
+        }
+    }
+
+    // Step 2: Analyze all migrations
+    println!();
+    println!("  {} Analyzing migrations...", "●".cyan());
+
+    let engine = RiskEngine::new(HashMap::new()).with_pg_version(pg_version);
+    let mut all_reports = Vec::new();
+    let mut total_issues = 0;
+    let mut critical_count = 0;
+    let mut high_count = 0;
+
+    for disc in &discover_report.discovered {
+        for sql_file in &disc.sql_files {
+            let file_path = sql_file.display().to_string();
+            match load_file(&file_path) {
+                Ok(migration) => {
+                    if let Ok(stmts) = parser::parse(&migration.sql) {
+                        let report = engine.analyze(&migration.name, &stmts);
+
+                        if report.overall_risk >= RiskLevel::Medium {
+                            total_issues += 1;
+                            match report.overall_risk {
+                                RiskLevel::Critical => critical_count += 1,
+                                RiskLevel::High => high_count += 1,
+                                _ => {}
+                            }
+
+                            if verbose {
+                                let risk_str = match report.overall_risk {
+                                    RiskLevel::Critical => "CRITICAL".red().bold(),
+                                    RiskLevel::High => "HIGH".red(),
+                                    RiskLevel::Medium => "MEDIUM".yellow(),
+                                    RiskLevel::Low => "LOW".green(),
+                                };
+                                println!(
+                                    "    {} {} (score: {})",
+                                    risk_str,
+                                    migration.name.dimmed(),
+                                    report.score
+                                );
+                            }
+                        }
+
+                        all_reports.push(report);
+                    }
+                }
+                Err(_) => {
+                    if verbose {
+                        eprintln!("    {} Could not read {}", "!".yellow(), file_path.dimmed());
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Summary
+    println!();
+    println!(
+        "{}",
+        "────────────────────────────────────────────────────────────────────────────────".dimmed()
+    );
+    println!();
+
+    let max_risk = all_reports
+        .iter()
+        .map(|r| r.overall_risk)
+        .max()
+        .unwrap_or(RiskLevel::Low);
+
+    if max_risk >= RiskLevel::High {
+        println!(
+            "  {} {} issue{} found requiring attention:",
+            "⚠".red().bold(),
+            total_issues.to_string().red().bold(),
+            if total_issues == 1 { "" } else { "s" }
+        );
+        println!();
+        if critical_count > 0 {
+            println!(
+                "    {} {} CRITICAL risk migration{}",
+                "•".red(),
+                critical_count,
+                if critical_count == 1 { "" } else { "s" }
+            );
+        }
+        if high_count > 0 {
+            println!(
+                "    {} {} HIGH risk migration{}",
+                "•".red(),
+                high_count,
+                if high_count == 1 { "" } else { "s" }
+            );
+        }
+        println!();
+        println!("  Run {} for details.", "schema-risk analyze <file>".cyan());
+    } else if max_risk == RiskLevel::Medium {
+        println!(
+            "  {} {} migration{} with MEDIUM risk — review recommended.",
+            "⚠".yellow(),
+            total_issues,
+            if total_issues == 1 { "" } else { "s" }
+        );
+    } else {
+        println!(
+            "  {} All {} migration{} look safe!",
+            "✓".green().bold(),
+            all_reports.len(),
+            if all_reports.len() == 1 { "" } else { "s" }
+        );
+    }
+
+    println!();
+    println!(
+        "{}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".cyan()
+    );
+    println!();
+
+    process::exit(max_risk.exit_code(fail_level));
+}
+
+// ─────────────────────────────────────────────
+// Text utilities
+// ─────────────────────────────────────────────
+
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}
+
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in s.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_string();
+        } else if current.len() + 1 + word.len() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(current);
+            current = word.to_string();
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
 }

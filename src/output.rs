@@ -346,6 +346,23 @@ fn statement_preview(stmt: &ParsedStatement) -> String {
                 )
             }
         }
+        ParsedStatement::Reindex {
+            target_type,
+            target_name,
+            concurrently,
+        } => {
+            let conc = if *concurrently { " CONCURRENTLY" } else { "" };
+            format!("REINDEX{} {} {}", conc, target_type, target_name)
+        }
+        ParsedStatement::Cluster { table, index } => match (table, index) {
+            (Some(t), Some(i)) => format!("CLUSTER {} USING {}", t, i),
+            (Some(t), None) => format!("CLUSTER {}", t),
+            _ => "CLUSTER".to_string(),
+        },
+        ParsedStatement::Truncate { tables, cascade } => {
+            let cascade_str = if *cascade { " CASCADE" } else { "" };
+            format!("TRUNCATE TABLE {}{}", tables.join(", "), cascade_str)
+        }
         ParsedStatement::Other { raw } => {
             let trimmed = raw.trim();
             if trimmed.len() > 100 {

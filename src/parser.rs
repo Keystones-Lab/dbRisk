@@ -105,6 +105,22 @@ pub enum ParsedStatement {
         column: String,
         drop_default: bool,
     },
+    /// REINDEX INDEX/TABLE/DATABASE — can take hours with ACCESS EXCLUSIVE (without CONCURRENTLY)
+    Reindex {
+        target_type: String, // "INDEX", "TABLE", "SCHEMA", "DATABASE"
+        target_name: String,
+        concurrently: bool,
+    },
+    /// CLUSTER table — full table rewrite with ACCESS EXCLUSIVE
+    Cluster {
+        table: Option<String>,
+        index: Option<String>,
+    },
+    /// TRUNCATE TABLE — instant but irreversible
+    Truncate {
+        tables: Vec<String>,
+        cascade: bool,
+    },
     /// Catch-all for statements we don't inspect in detail.
     Other {
         raw: String,
@@ -124,9 +140,15 @@ pub const UNSAFE_KEYWORDS: &[&str] = &[
     "DROP SCHEMA",
     "TRUNCATE",
     "ATTACH PARTITION",
+    "DETACH PARTITION",
     "CREATE POLICY",
     "ENABLE ROW LEVEL SECURITY",
     "ALTER TABLE",
+    "REINDEX",      // P0: Major operation - can take hours with ACCESS EXCLUSIVE
+    "CLUSTER",      // Full table rewrite with ACCESS EXCLUSIVE
+    "VACUUM FULL",  // Full table rewrite with ACCESS EXCLUSIVE
+    "SET LOGGED",   // Table rewrite (UNLOGGED -> LOGGED)
+    "SET UNLOGGED", // Table rewrite (LOGGED -> UNLOGGED)
 ];
 
 /// Returns `Some(note)` if `raw` (uppercased) contains any known unsafe keyword.
@@ -600,6 +622,23 @@ fn lower_to_parsed(stmt: Statement) -> ParsedStatement {
             // Unrecognised ALTER TABLE operation
             ParsedStatement::Other {
                 raw: format!("ALTER TABLE {}", name),
+            }
+        }
+
+        // ── TRUNCATE ─────────────────────────────────────────────────────
+        Statement::Truncate {
+            table_names,
+            cascade,
+            ..
+        } => {
+            // cascade is Option<TruncateCascadeOption> which can be Cascade or Restrict
+            let is_cascade = cascade
+                .as_ref()
+                .map(|c| matches!(c, sqlparser::ast::TruncateCascadeOption::Cascade))
+                .unwrap_or(false);
+            ParsedStatement::Truncate {
+                tables: table_names.iter().map(|t| t.name.to_string()).collect(),
+                cascade: is_cascade,
             }
         }
 
