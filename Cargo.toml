@@ -1,15 +1,15 @@
 [package]
 name = "schema-risk"
-version = "0.1.2"
+version = "2.0.0"
 edition = "2021"
 authors = ["Keystones-lab"]
-description = "Production-grade PostgreSQL migration safety analyzer and dangerous-command guardian"
+description = "Stop dangerous database migrations before they reach production"
 license = "MIT"
 repository = "https://github.com/Keystones-Lab/Schema-risk"
 homepage = "https://github.com/Keystones-Lab/Schema-risk"
 documentation = "https://docs.rs/schema-risk"
 readme = "README.md"
-keywords = ["database", "migration", "sql", "risk", "cli"]
+keywords = ["database", "migration", "sql", "postgresql", "safety"]
 categories = ["command-line-utilities", "database"]
 
 [lib]
@@ -27,8 +27,8 @@ clap = { version = "4.5", features = ["derive", "color", "env"] }
 # SQL parsing
 sqlparser = "0.53"
 
-# Async runtime
-tokio = { version = "1.44", features = ["full"] }
+# Async runtime (minimal features for faster compile)
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros"] }
 
 # Graph analysis for dependency tracking
 petgraph = "0.6"
@@ -47,23 +47,23 @@ colored = "2"
 # Rich terminal tables
 comfy-table = "7"
 
-# Structured logging / tracing
+# Structured logging (minimal for faster compile)
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
 
-# Timestamps
-chrono = { version = "0.4", features = ["serde"] }
+# Timestamps (minimal features)
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 
-# Regex for pattern matching (SQL extraction from code)
+# Regex for pattern matching
 regex = "1.11"
 
 # Glob for multi-file analysis
 glob = "0.3"
 
-# Environment variable loading from .env files
+# Environment variable loading
 dotenvy = "0.15"
 
-# PostgreSQL driver (optional – only used for --db-url)
+# PostgreSQL driver (optional)
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"], optional = true }
 
 # sqlx-based PostgreSQL driver (alternative, feature-gated)
@@ -72,29 +72,25 @@ sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "m
 # Parallel file scanning
 rayon = "1.10"
 
-# HTTP for GitHub API (optional – only used for CI reporting)
+# HTTP for GitHub API (optional)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 
-# YAML config serialization/deserialization
+# YAML config
 serde_yaml = "0.9"
 
 [features]
 default = []
-# Enable live database introspection via tokio-postgres
 db = ["tokio-postgres"]
-# Enable live database introspection via sqlx (alternative - richer query API)
 sqlx-db = ["sqlx"]
-# Enable GitHub API integration
 github = ["reqwest"]
-# Enable everything
 full = ["db", "github"]
 
 [profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Single codegen unit for better optimization
+panic = "abort"     # Smaller binary
+strip = true        # Strip symbols
 
 [profile.dev]
 opt-level = 0
