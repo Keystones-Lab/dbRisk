@@ -285,27 +285,63 @@ impl RiskEngine {
                 new_type,
             } => {
                 let rows = self.row_counts.get(table).copied().unwrap_or(0);
-                let score = if rows > 1_000_000 { 90 } else { 40 };
+                let upper_type = new_type.to_uppercase();
+
+                // Detect safe type conversions that are metadata-only on PG9.2+
+                // Reference: https://www.postgresql.org/docs/current/sql-altertable.html
+                let is_safe_varchar_expansion = upper_type.starts_with("VARCHAR")
+                    || upper_type.starts_with("CHARACTER VARYING")
+                    || upper_type == "TEXT";
+                let is_safe_numeric_precision_increase =
+                    upper_type.starts_with("NUMERIC") || upper_type.starts_with("DECIMAL");
+
+                // VARCHAR(n) -> VARCHAR(m) where m > n is metadata-only
+                // VARCHAR(n) -> TEXT is metadata-only
+                // NUMERIC(p,s) -> NUMERIC(p',s) where p' > p is metadata-only (same scale)
+                let (score, risk_level, is_safe) = if is_safe_varchar_expansion {
+                    // Expanding VARCHAR or converting to TEXT is safe
+                    (15, RiskLevel::Low, true)
+                } else if is_safe_numeric_precision_increase {
+                    // Increasing numeric precision MAY be safe (depends on scale)
+                    // We score it medium because we can't verify the old type
+                    (30, RiskLevel::Medium, false)
+                } else if rows > 1_000_000 {
+                    (90, RiskLevel::High, false)
+                } else {
+                    (40, RiskLevel::Medium, false)
+                };
+
                 let row_note = if rows > 0 {
                     format!(" (~{} rows)", rows)
                 } else {
                     String::new()
                 };
+
+                let warning = if is_safe {
+                    Some(format!(
+                        "Type change '{}.{}' → {} is likely a metadata-only operation on PG9.2+ \
+                         (expanding VARCHAR or converting to TEXT). Verify the current type is compatible.",
+                        table, column, new_type
+                    ))
+                } else {
+                    Some(format!(
+                        "Type change on '{}.{}' → {} requires a full table rewrite on ALL PostgreSQL versions{}. \
+                         Use the 4-step zero-downtime pattern: add new column, backfill, drop old, rename.",
+                        table, column, new_type, row_note
+                    ))
+                };
+
                 vec![DetectedOperation {
                     description: format!(
                         "ALTER TABLE {} ALTER COLUMN {} TYPE {}{}",
                         table, column, new_type, row_note
                     ),
                     tables: vec![table.clone()],
-                    risk_level: RiskLevel::from_score(score),
+                    risk_level,
                     score,
-                    warning: Some(format!(
-                        "Type change on '{}.{}' → {} requires a full table rewrite on ALL PostgreSQL versions{}. \
-                         Use the 4-step zero-downtime pattern: add new column, backfill, drop old, rename.",
-                        table, column, new_type, row_note
-                    )),
-                    acquires_lock: true,
-                    index_rebuild: true,
+                    warning,
+                    acquires_lock: !is_safe,
+                    index_rebuild: !is_safe,
                 }]
             }
 
@@ -627,6 +663,98 @@ impl RiskEngine {
                     warning: Some(format!(
                         "Adding PRIMARY KEY to '{}' builds an index over the entire table",
                         table
+                    )),
+                    acquires_lock: true,
+                    index_rebuild: true,
+                }]
+            }
+
+            // ── TRUNCATE ─────────────────────────────────────────────────────
+            ParsedStatement::Truncate { tables, cascade } => {
+                let mut ops = Vec::new();
+                for table in tables {
+                    let refs = graph.tables_referencing(table);
+                    let ref_note = if !refs.is_empty() && *cascade {
+                        format!(" CASCADE will also truncate: {}", refs.join(", "))
+                    } else {
+                        String::new()
+                    };
+
+                    ops.push(DetectedOperation {
+                        description: format!("TRUNCATE TABLE {}{}", table, ref_note),
+                        tables: vec![table.clone()],
+                        risk_level: RiskLevel::Critical,
+                        score: 120,
+                        warning: Some(format!(
+                            "TRUNCATE '{}' instantly destroys ALL data in the table.{} \
+                             This cannot be undone without a backup — there is no rollback for TRUNCATE.",
+                            table, ref_note
+                        )),
+                        acquires_lock: true,
+                        index_rebuild: false,
+                    });
+                }
+                ops
+            }
+
+            // ── REINDEX ──────────────────────────────────────────────────────
+            ParsedStatement::Reindex {
+                target_type,
+                target_name,
+                concurrently,
+            } => {
+                let score = if *concurrently { 15 } else { 80 };
+                let risk = if *concurrently {
+                    RiskLevel::Low
+                } else {
+                    RiskLevel::High
+                };
+
+                vec![DetectedOperation {
+                    description: format!(
+                        "REINDEX{} {} {}",
+                        if *concurrently { " CONCURRENTLY" } else { "" },
+                        target_type,
+                        target_name
+                    ),
+                    tables: vec![target_name.clone()],
+                    risk_level: risk,
+                    score,
+                    warning: if *concurrently {
+                        Some(format!(
+                            "REINDEX CONCURRENTLY on '{}' allows concurrent reads/writes (PG12+)",
+                            target_name
+                        ))
+                    } else {
+                        Some(format!(
+                            "REINDEX '{}' without CONCURRENTLY holds ACCESS EXCLUSIVE lock. \
+                             On large tables this can take hours. Use REINDEX CONCURRENTLY (PG12+).",
+                            target_name
+                        ))
+                    },
+                    acquires_lock: !concurrently,
+                    index_rebuild: true,
+                }]
+            }
+
+            // ── CLUSTER ──────────────────────────────────────────────────────
+            ParsedStatement::Cluster { table, index } => {
+                let desc = match (table, index) {
+                    (Some(t), Some(i)) => format!("CLUSTER {} USING {}", t, i),
+                    (Some(t), None) => format!("CLUSTER {}", t),
+                    _ => "CLUSTER".to_string(),
+                };
+                let table_name = table.clone().unwrap_or_else(|| "ALL TABLES".to_string());
+                vec![DetectedOperation {
+                    description: desc,
+                    tables: vec![table_name.clone()],
+                    risk_level: RiskLevel::Critical,
+                    score: 100,
+                    warning: Some(format!(
+                        "CLUSTER completely rewrites '{}' to match index order while holding \
+                         ACCESS EXCLUSIVE lock. This can take hours on large tables and blocks \
+                         all reads and writes.",
+                        table_name
                     )),
                     acquires_lock: true,
                     index_rebuild: true,
