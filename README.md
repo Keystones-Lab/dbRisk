@@ -87,7 +87,7 @@ Output:
 Analyzing dangerous migration...
 
 ┌─────────────────────────────────────────────────────────────┐
-│ ⛔ CRITICAL RISK DETECTED                                   │
+│ CRITICAL RISK DETECTED                                      │
 ├─────────────────────────────────────────────────────────────┤
 │ Operation: ALTER COLUMN TYPE on `users.email`               │
 │ Impact:    Full table rewrite (~5M rows)                    │
@@ -209,16 +209,16 @@ jobs:
 
 | Operation | Risk | Why It's Dangerous |
 |-----------|------|-------------------|
-| `CREATE INDEX` (no `CONCURRENTLY`) | 🔴 HIGH | Blocks all writes during build |
-| `ALTER COLUMN TYPE` | 🔴 HIGH | Full table rewrite, exclusive lock |
-| `ADD COLUMN NOT NULL` (no default) | 🔴 HIGH | Fails on existing rows |
-| `DROP TABLE` | ⛔ CRITICAL | Irreversible data loss |
-| `DROP COLUMN` | 🔴 HIGH | Breaks app code still reading it |
-| `RENAME COLUMN/TABLE` | 🔴 HIGH | Breaks all downstream queries |
-| `SET NOT NULL` | 🟡 MEDIUM | Full table scan to validate |
-| `ADD COLUMN DEFAULT` (PG < 11) | 🔴 HIGH | Table rewrite (metadata-only on PG11+) |
-| `TRUNCATE` | ⛔ CRITICAL | Immediate data destruction |
-| `ON DELETE CASCADE` | 🟡 MEDIUM | Silent cascading deletes |
+| `CREATE INDEX` (no `CONCURRENTLY`) |  HIGH | Blocks all writes during build |
+| `ALTER COLUMN TYPE` |  HIGH | Full table rewrite, exclusive lock |
+| `ADD COLUMN NOT NULL` (no default) |  HIGH | Fails on existing rows |
+| `DROP TABLE` |  CRITICAL | Irreversible data loss |
+| `DROP COLUMN` |  HIGH | Breaks app code still reading it |
+| `RENAME COLUMN/TABLE` |  HIGH | Breaks all downstream queries |
+| `SET NOT NULL` |  MEDIUM | Full table scan to validate |
+| `ADD COLUMN DEFAULT` (PG < 11) |  HIGH | Table rewrite (metadata-only on PG11+) |
+| `TRUNCATE` |  CRITICAL | Immediate data destruction |
+| `ON DELETE CASCADE` |  MEDIUM | Silent cascading deletes |
 
 ---
 
